@@ -5,16 +5,18 @@ import pymysql
 from datetime import datetime
 import os
 
+# --- 1. Konfigurasi Aplikasi ---
 app = Flask(__name__)
 CORS(app)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+socketio = SocketIO(app, cors_allowed_origins="*")
 
-# MySQL via environment
+# --- 2. Konfigurasi MySQL via Environment Variables ---
 MYSQL_HOST = os.getenv("MYSQL_HOST")
 MYSQL_USER = os.getenv("MYSQL_USER")
 MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
 MYSQL_DB = os.getenv("MYSQL_DB")
 MYSQL_PORT = int(os.getenv("MYSQL_PORT", 3306))
+
 
 def get_db_connection():
     return pymysql.connect(
@@ -26,26 +28,38 @@ def get_db_connection():
         cursorclass=pymysql.cursors.DictCursor
     )
 
+
+# --- 3. Endpoint Home ---
 @app.route('/')
 def home():
     return jsonify({"status": "Server running", "message": "Access API at /api/data/..."})
 
+
+# --- 4. Endpoint menerima data IoT ---
 @app.route('/api/data/suhu', methods=['POST'])
 def receive_iot_data():
     if not request.is_json:
-        return jsonify({"message": "Request harus JSON"}), 400
+        return jsonify({"message": "Request harus dalam format JSON"}), 400
+
     data = request.get_json()
     if 'suhu' not in data:
         return jsonify({"message": "Data 'suhu' tidak ditemukan"}), 400
 
     suhu_value = data['suhu']
     current_time = datetime.now()
-    socketio.emit('suhu_update', {'suhu': suhu_value, 'timestamp': current_time.strftime('%H:%M:%S')})
 
+    # Kirim realtime ke frontend via SocketIO
+    socketio.emit('suhu_update', {
+        'suhu': suhu_value,
+        'timestamp': current_time.strftime('%H:%M:%S')
+    })
+
+    # Simpan ke MySQL
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            cursor.execute("INSERT INTO suhu_log (suhu, timestamp) VALUES (%s, %s)", (suhu_value, current_time))
+            sql = "INSERT INTO suhu_log (suhu, timestamp) VALUES (%s, %s)"
+            cursor.execute(sql, (suhu_value, current_time))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -53,27 +67,35 @@ def receive_iot_data():
 
     return jsonify({"message": "Data diterima dan diproses"}), 200
 
+
+# --- 5. Endpoint untuk mengambil data historis ---
 @app.route('/api/data/historis', methods=['GET'])
 def get_historical_data():
-    data_historis = []
+    data_historis_formatted = []
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            cursor.execute("SELECT suhu, timestamp FROM suhu_log ORDER BY id DESC LIMIT 50")
+            sql = "SELECT suhu, timestamp FROM suhu_log ORDER BY id DESC LIMIT 50"
+            cursor.execute(sql)
             data_historis = cursor.fetchall()
         conn.close()
+
+        for item in data_historis:
+            ts = item['timestamp']
+            if isinstance(ts, datetime):
+                ts = ts.strftime('%H:%M:%S')
+            data_historis_formatted.append({
+                'suhu': item['suhu'],
+                'timestamp': ts
+            })
     except Exception as e:
         print(f"[ERROR DB] {e}")
         return jsonify([]), 500
 
-    # Format timestamp
-    for i in data_historis:
-        if isinstance(i['timestamp'], datetime):
-            i['timestamp'] = i['timestamp'].strftime('%H:%M:%S')
-        else:
-            i['timestamp'] = str(i['timestamp'])
-    return jsonify(data_historis), 200
+    return jsonify(data_historis_formatted), 200
 
+
+# --- 6. Menjalankan Server ---
 if __name__ == '__main__':
     PORT = int(os.getenv("PORT", 5000))
     socketio.run(app, host='0.0.0.0', port=PORT)
