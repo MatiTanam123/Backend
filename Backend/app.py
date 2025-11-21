@@ -107,4 +107,5 @@ if __name__ == '__main__':
     PORT = int(os.getenv("PORT", 5000))
     print(f"Server jalan di port {PORT}")
     socketio.run(app, host='0.0.0.0', port=PORT)
-apakah ini sudah benar unutk render
+
+
