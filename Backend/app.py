@@ -1,3 +1,6 @@
+import eventlet
+eventlet.monkey_patch()  # HARUS DI BARIS PERTAMA
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO
@@ -5,18 +8,17 @@ import pymysql
 from datetime import datetime
 import os
 
-# --- 1. Konfigurasi Aplikasi ---
+# --- 1. Aplikasi Flask ---
 app = Flask(__name__)
 CORS(app)
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
 
 # --- 2. Konfigurasi MySQL via Environment Variables ---
-MYSQL_HOST = os.getenv("MYSQL_HOST")
-MYSQL_USER = os.getenv("MYSQL_USER")
-MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
-MYSQL_DB = os.getenv("MYSQL_DB")
+MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
+MYSQL_USER = os.getenv("MYSQL_USER", "root")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "12345678")  # default lokal
+MYSQL_DB = os.getenv("MYSQL_DB", "iot_db")
 MYSQL_PORT = int(os.getenv("MYSQL_PORT", 3306))
-
 
 def get_db_connection():
     return pymysql.connect(
@@ -28,18 +30,16 @@ def get_db_connection():
         cursorclass=pymysql.cursors.DictCursor
     )
 
-
 # --- 3. Endpoint Home ---
 @app.route('/')
 def home():
     return jsonify({"status": "Server running", "message": "Access API at /api/data/..."})
 
-
-# --- 4. Endpoint menerima data IoT ---
+# --- 4. Endpoint untuk menerima data IoT ---
 @app.route('/api/data/suhu', methods=['POST'])
 def receive_iot_data():
     if not request.is_json:
-        return jsonify({"message": "Request harus dalam format JSON"}), 400
+        return jsonify({"message": "Request harus JSON"}), 400
 
     data = request.get_json()
     if 'suhu' not in data:
@@ -48,11 +48,12 @@ def receive_iot_data():
     suhu_value = data['suhu']
     current_time = datetime.now()
 
-    # Kirim realtime ke frontend via SocketIO
-    socketio.emit('suhu_update', {
+    # Kirim realtime ke frontend
+    data_to_send = {
         'suhu': suhu_value,
         'timestamp': current_time.strftime('%H:%M:%S')
-    })
+    }
+    socketio.emit('suhu_update', data_to_send)
 
     # Simpan ke MySQL
     try:
@@ -67,8 +68,7 @@ def receive_iot_data():
 
     return jsonify({"message": "Data diterima dan diproses"}), 200
 
-
-# --- 5. Endpoint untuk mengambil data historis ---
+# --- 5. Endpoint untuk data historis ---
 @app.route('/api/data/historis', methods=['GET'])
 def get_historical_data():
     data_historis_formatted = []
@@ -81,21 +81,20 @@ def get_historical_data():
         conn.close()
 
         for item in data_historis:
-            ts = item['timestamp']
-            if isinstance(ts, datetime):
-                ts = ts.strftime('%H:%M:%S')
+            time = item['timestamp'].strftime('%H:%M:%S')
             data_historis_formatted.append({
                 'suhu': item['suhu'],
-                'timestamp': ts
+                'timestamp': time
             })
+
     except Exception as e:
         print(f"[ERROR DB] {e}")
         return jsonify([]), 500
 
     return jsonify(data_historis_formatted), 200
 
-
-# --- 6. Menjalankan Server ---
+# --- 6. Menjalankan server lokal (untuk testing) ---
 if __name__ == '__main__':
     PORT = int(os.getenv("PORT", 5000))
-    socketio.run(app, host='0.0.0.0', port=PORT)
+    print(f"Server lokal jalan di port {PORT}")
+    socketio.run(app, host='0.0.0.0', port=PORT, debug=True)
