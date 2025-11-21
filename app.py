@@ -6,36 +6,62 @@ from datetime import datetime
 import os
 
 # --- 1. Konfigurasi Aplikasi ---
+# Jika Anda menggunakan file .env, pastikan library dotenv sudah terinstal
+# pip install python-dotenv
+# from dotenv import load_dotenv
+# load_dotenv()
+
 app = Flask(__name__)
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # --- 2. Konfigurasi MySQL via Environment Variables ---
+# Nilai-nilai ini diambil dari environment atau file .env (lihat file .env)
 MYSQL_HOST = os.getenv("MYSQL_HOST")
 MYSQL_USER = os.getenv("MYSQL_USER")
 MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
 MYSQL_DB = os.getenv("MYSQL_DB")
 MYSQL_PORT = int(os.getenv("MYSQL_PORT", 3306))
 
+# Tambahan untuk Aiven: Path ke CA Certificate yang diunduh dari Aiven Console
+MYSQL_CA_PATH = os.getenv("MYSQL_CA_PATH") 
+
 
 def get_db_connection():
-    return pymysql.connect(
-        host=MYSQL_HOST,
-        user=MYSQL_USER,
-        password=MYSQL_PASSWORD,
-        database=MYSQL_DB,
-        port=MYSQL_PORT,
-        cursorclass=pymysql.cursors.DictCursor
-    )
+    """Membuka koneksi database baru, termasuk konfigurasi SSL untuk Aiven."""
+    
+    # Konfigurasi SSL (Wajib untuk Aiven)
+    ssl_config = {}
+    if MYSQL_CA_PATH and os.path.exists(MYSQL_CA_PATH):
+        ssl_config = {'ca': MYSQL_CA_PATH}
+    else:
+        # Peringatan jika path CA tidak ditemukan, yang dapat menyebabkan koneksi gagal
+        print("[WARNING] MYSQL_CA_PATH tidak ditemukan atau kosong. Koneksi mungkin gagal tanpa SSL.")
+        
+    try:
+        return pymysql.connect(
+            host=MYSQL_HOST,
+            user=MYSQL_USER,
+            password=MYSQL_PASSWORD,
+            database=MYSQL_DB,
+            port=MYSQL_PORT,
+            cursorclass=pymysql.cursors.DictCursor,
+            # Menggunakan konfigurasi SSL yang sudah disiapkan
+            ssl=ssl_config 
+        )
+    except Exception as e:
+        print(f"[ERROR DB CONNECT] Gagal terhubung ke MySQL: {e}")
+        # Penting: Jika koneksi gagal, Flask akan berhenti di sini.
+        raise Exception("Database Connection Failed")
 
 
-# --- 3. Endpoint Home ---
+# --- 3. Endpoint Home (Tidak Berubah) ---
 @app.route('/')
 def home():
-    return jsonify({"status": "Server running", "message": "Access API at /api/data/..."})
+    return jsonify({"status": "Server running", "message": "Aplikasi IoT Logger berjalan"})
 
 
-# --- 4. Endpoint menerima data IoT ---
+# --- 4. Endpoint menerima data IoT (Tidak Berubah) ---
 @app.route('/api/data/suhu', methods=['POST'])
 def receive_iot_data():
     if not request.is_json:
@@ -63,12 +89,13 @@ def receive_iot_data():
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"[ERROR DB] {e}")
+        print(f"[ERROR DB] Gagal menyimpan data: {e}")
+        return jsonify({"message": "Data diterima, namun gagal disimpan ke DB"}), 500
 
     return jsonify({"message": "Data diterima dan diproses"}), 200
 
 
-# --- 5. Endpoint untuk mengambil data historis ---
+# --- 5. Endpoint untuk mengambil data historis (Tidak Berubah) ---
 @app.route('/api/data/historis', methods=['GET'])
 def get_historical_data():
     data_historis_formatted = []
@@ -89,7 +116,7 @@ def get_historical_data():
                 'timestamp': ts
             })
     except Exception as e:
-        print(f"[ERROR DB] {e}")
+        print(f"[ERROR DB] Gagal mengambil data historis: {e}")
         return jsonify([]), 500
 
     return jsonify(data_historis_formatted), 200
@@ -97,5 +124,8 @@ def get_historical_data():
 
 # --- 6. Menjalankan Server ---
 if __name__ == '__main__':
+    # Untuk local development, pastikan Anda install python-dotenv 
+    # dan gunakan load_dotenv() di awal skrip.
     PORT = int(os.getenv("PORT", 5000))
+    print(f"Server berjalan di port {PORT}...")
     socketio.run(app, host='0.0.0.0', port=PORT)
