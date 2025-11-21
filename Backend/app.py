@@ -1,111 +1,79 @@
-# app.py
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO
 import pymysql
 from datetime import datetime
 import os
-import eventlet
 
-# --- Patching untuk eventlet ---
-eventlet.monkey_patch()
-
-# --- 1. Konfigurasi Aplikasi ---
 app = Flask(__name__)
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
 
-# --- 2. Konfigurasi MySQL via Environment Variables ---
+# MySQL via environment
 MYSQL_HOST = os.getenv("MYSQL_HOST")
 MYSQL_USER = os.getenv("MYSQL_USER")
 MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
 MYSQL_DB = os.getenv("MYSQL_DB")
 MYSQL_PORT = int(os.getenv("MYSQL_PORT", 3306))
 
-
 def get_db_connection():
-    """Membuat koneksi ke database MySQL"""
-    return pymysql.connect(
-        host=MYSQL_HOST,
-        user=MYSQL_USER,
-        password=MYSQL_PASSWORD,
-        database=MYSQL_DB,
-        port=MYSQL_PORT,
-        cursorclass=pymysql.cursors.DictCursor
-    )
+    return pymysql.connect(
+        host=MYSQL_HOST,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        database=MYSQL_DB,
+        port=MYSQL_PORT,
+        cursorclass=pymysql.cursors.DictCursor
+    )
 
-
-# --- 3. Endpoint Home ---
 @app.route('/')
 def home():
-    return jsonify({"status": "Server running", "message": "Access API at /api/data/..."})
+    return jsonify({"status": "Server running", "message": "Access API at /api/data/..."})
 
-
-# --- 4. Endpoint menerima data IoT ---
 @app.route('/api/data/suhu', methods=['POST'])
 def receive_iot_data():
-    if not request.is_json:
-        return jsonify({"message": "Request harus dalam format JSON"}), 400
+    if not request.is_json:
+        return jsonify({"message": "Request harus JSON"}), 400
+    data = request.get_json()
+    if 'suhu' not in data:
+        return jsonify({"message": "Data 'suhu' tidak ditemukan"}), 400
 
-    data = request.get_json()
+    suhu_value = data['suhu']
+    current_time = datetime.now()
+    socketio.emit('suhu_update', {'suhu': suhu_value, 'timestamp': current_time.strftime('%H:%M:%S')})
 
-    if 'suhu' not in data:
-        return jsonify({"message": "Data 'suhu' tidak ditemukan"}), 400
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            cursor.execute("INSERT INTO suhu_log (suhu, timestamp) VALUES (%s, %s)", (suhu_value, current_time))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[ERROR DB] {e}")
 
-    suhu_value = data['suhu']
-    current_time = datetime.now()
+    return jsonify({"message": "Data diterima dan diproses"}), 200
 
-    # Kirim realtime ke frontend via SocketIO
-    data_to_send = {
-        'suhu': suhu_value,
-        'timestamp': current_time.strftime('%H:%M:%S')
-    }
-    socketio.emit('suhu_update', data_to_send)
-
-    # Simpan ke MySQL
-    try:
-        conn = get_db_connection()
-        with conn.cursor() as cursor:
-            sql = "INSERT INTO suhu_log (suhu, timestamp) VALUES (%s, %s)"
-            cursor.execute(sql, (suhu_value, current_time))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"[ERROR DB] {e}")
-
-    return jsonify({"message": "Data diterima dan diproses"}), 200
-
-
-# --- 5. Endpoint untuk mengambil data historis ---
 @app.route('/api/data/historis', methods=['GET'])
 def get_historical_data():
-    data_historis_formatted = []
+    data_historis = []
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT suhu, timestamp FROM suhu_log ORDER BY id DESC LIMIT 50")
+            data_historis = cursor.fetchall()
+        conn.close()
+    except Exception as e:
+        print(f"[ERROR DB] {e}")
+        return jsonify([]), 500
 
-    try:
-        conn = get_db_connection()
-        with conn.cursor() as cursor:
-            sql = "SELECT suhu, timestamp FROM suhu_log ORDER BY id DESC LIMIT 50"
-            cursor.execute(sql)
-            data_historis = cursor.fetchall()
-        conn.close()
+    # Format timestamp
+    for i in data_historis:
+        if isinstance(i['timestamp'], datetime):
+            i['timestamp'] = i['timestamp'].strftime('%H:%M:%S')
+        else:
+            i['timestamp'] = str(i['timestamp'])
+    return jsonify(data_historis), 200
 
-        for item in data_historis:
-            time = item['timestamp'].strftime('%H:%M:%S')
-            data_historis_formatted.append({
-                'suhu': item['suhu'],
-                'timestamp': time
-            })
-    except Exception as e:
-        print(f"[ERROR DB] {e}")
-        return jsonify([]), 500
-
-    return jsonify(data_historis_formatted), 200
-
-
-# --- 6. Menjalankan Server ---
 if __name__ == '__main__':
-    PORT = int(os.getenv("PORT", 5000))
-    print(f"Server jalan di port {PORT}")
-    socketio.run(app, host='0.0.0.0', port=PORT)
-
-
+    PORT = int(os.getenv("PORT", 5000))
+    socketio.run(app, host='0.0.0.0', port=PORT)
